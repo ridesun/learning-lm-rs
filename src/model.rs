@@ -43,7 +43,7 @@ impl Llama<f32> {
             eps: config.rms_norm_eps,
             rope_theta: config.rope_theta,
             max_seq_len: config.max_position_embeddings,
-            params: params,
+            params,
             bos_token_id: config.bos_token_id,
             eos_token_id: config.eos_token_id,
         }
@@ -167,7 +167,28 @@ fn mlp(
     rms_w: &Tensor<f32>,
     eps: f32,
 ) {
-    todo!("Implement mlp");
+    OP::rms_norm(hidden_states, residual, rms_w, eps);
+
+    OP::matmul_transb(gate, 0., hidden_states, w_gate, 1.0);
+    OP::matmul_transb(up, 0., hidden_states, w_up, 1.0);
+
+    let gate_size = gate.size();
+    let gate_data = unsafe { gate.data_mut() };
+    let up_data = up.data();
+    for i in 0..gate_size {
+        let sigmoid_gate = 1.0 / (1.0 + (-gate_data[i]).exp());
+        gate_data[i] = gate_data[i] * sigmoid_gate * up_data[i];
+    }
+
+    let mut output = Tensor::<f32>::default(hidden_states.shape()); // Temporary buffer for output
+    OP::matmul_transb(&mut output, 0., gate, w_down, 1.0);
+
+    let residual_size = residual.size();
+    let residual_data = unsafe { residual.data_mut() };
+    let output_data = output.data();
+    for i in 0..residual_size {
+        residual_data[i] += output_data[i];
+    }
 }
 
 #[test]
@@ -207,7 +228,21 @@ pub fn test_mlp() {
         1e-3
     ))
 }
+#[test]
+pub fn show_safetensors(){
+    use std::path::PathBuf;
+    let project_dir = env!("CARGO_MANIFEST_DIR");
+    let model_dir = PathBuf::from(project_dir).join("models").join("story");
+    let config = File::open(model_dir.join("config.json")).unwrap();
+    let config: LlamaConfigJson = serde_json::from_reader(config).unwrap();
+    let model_file = std::fs::read(model_dir.join("model.safetensors")).unwrap();
+    let safetensor = SafeTensors::deserialize(&model_file).unwrap();
+    let v=safetensor.tensors();
+    let names=v.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
+    names.iter().for_each(|v| println!("{}", v));
+    println!("{:?}",config);
 
+}
 #[test]
 pub fn test_load_safetensors() {
     use std::path::PathBuf;
